@@ -420,3 +420,34 @@ func TestTailscaledDownKeepsDropForStaleRoute(t *testing.T) {
 		t.Fatalf("stale route left unprotected:\n%s", h.nft.text)
 	}
 }
+
+func TestPinSurvivesTemporaryDisappearance(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	cfg := cfgWith(lanMapping())
+	if _, err := h.eng.Reconcile(ctx, cfg, Options{}); err != nil {
+		t.Fatal(err)
+	}
+	peer := onlyPeer(h)
+	saved := *peer
+	peer.DNSName, peer.HostName = "gone.ts.net.", "gone"
+	if res, _ := h.eng.Reconcile(ctx, cfg, Options{}); res.Mapping("b").State != StateError {
+		t.Fatal("expected error while peer is gone")
+	}
+	// tailscaled outage must not revive the mapping from cache.
+	h.ts.down = true
+	if res, _ := h.eng.Reconcile(ctx, cfg, Options{}); res.Mapping("b").State != StateError {
+		t.Fatal("cached address revived a mapping whose peer is gone")
+	}
+	h.ts.down = false
+	// A different node takes the name: still rejected.
+	*peer = saved
+	peer.ID = "imposter"
+	if res, _ := h.eng.Reconcile(ctx, cfg, Options{}); res.Mapping("b").State != StateError {
+		t.Fatal("pin lost after the peer disappeared")
+	}
+	peer.ID = saved.ID
+	if res, _ := h.eng.Reconcile(ctx, cfg, Options{}); res.Mapping("b").State != StateActive {
+		t.Fatal("pinned node not accepted when it returns")
+	}
+}

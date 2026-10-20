@@ -261,8 +261,12 @@ func (e *Engine) evalLAN(m *config.Mapping, ms *MappingStatus, st *state.State, 
 		switch {
 		case err != nil:
 			// Forget the cached address so a later tailscaled outage
-			// cannot revive a mapping whose peer is gone.
-			delete(st.Peers, m.Name)
+			// cannot revive a mapping whose peer is gone, but keep the
+			// pin so a different node cannot take over the name.
+			if hasCache {
+				cached.IP = netip.Addr{}
+				st.Peers[m.Name] = cached
+			}
 			ms.fail("%v", err)
 		case hasCache && cached.NodeID != "" && p.ID != cached.NodeID:
 			ms.fail("peer %q now resolves to a different node (%s, id %s; pinned id %s); remove and re-add the mapping to trust it", m.Peer, p.Name, p.ID, cached.NodeID)
@@ -276,7 +280,7 @@ func (e *Engine) evalLAN(m *config.Mapping, ms *MappingStatus, st *state.State, 
 			}
 			st.Peers[m.Name] = state.CachedPeer{Spec: m.Peer, IP: p.IP, NodeID: p.ID}
 		}
-	case hasCache:
+	case hasCache && cached.IP.IsValid():
 		peerIP = cached.IP
 		ms.warn("tailscaled unavailable; using last known peer address %s", cached.IP)
 	default:
