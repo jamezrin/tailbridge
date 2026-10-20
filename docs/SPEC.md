@@ -1,6 +1,6 @@
 # Tailbridge: draft technical direction
 
-**Status:** Proposal / discussion draft  
+**Status:** Proposal / discussion draft. A v1 implementing §2A and §2B now exists; see [USAGE.md](USAGE.md) for the decisions it takes on §8.  
 **Date:** 2026-10-20  
 **Scope:** Linux-first; two directions of device exposure; IPv4 first
 
