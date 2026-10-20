@@ -5,6 +5,7 @@ pkgrel=1
 pkgdesc='Expose individual devices across a LAN and a Tailscale tailnet (IPv4 aliases, NAT and per-device /32 routes)'
 arch=('x86_64' 'aarch64' 'armv7h')
 url='https://github.com/jamezrin/tailbridge'
+# TODO: set to the project's SPDX license once a LICENSE file exists.
 license=('unknown')
 depends=('glibc' 'nftables' 'tailscale')
 makedepends=('git' 'go')
@@ -57,5 +58,4 @@ package() {
 		install -Dm644 /dev/stdin "${pkgdir}/usr/lib/systemd/system/tailbridge.service"
 	install -Dm644 README.md "${pkgdir}/usr/share/doc/${pkgname%-git}/README.md"
 	install -Dm644 docs/USAGE.md "${pkgdir}/usr/share/doc/${pkgname%-git}/USAGE.md"
-	install -dm755 "${pkgdir}/etc/tailbridge"
 }
