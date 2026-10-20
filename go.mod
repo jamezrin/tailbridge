@@ -1,12 +1,12 @@
 module github.com/jamezrin/tailbridge
 
-go 1.27.3
+go 1.27.1
 
 require (
 	github.com/spf13/cobra v1.10.2
 	github.com/vishvananda/netlink v1.3.1
 	golang.org/x/sys v0.49.0
-	tailscale.com v1.104.2
+	tailscale.com v1.104.1
 )
 
 require (

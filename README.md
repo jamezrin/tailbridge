@@ -24,6 +24,8 @@ Both directions support multiple mappings per gateway, source and port restricti
 
 ## Quick start
 
+On Arch Linux, install [`tailbridge-git`](https://aur.archlinux.org/packages/tailbridge-git) from the AUR (for example `paru -S tailbridge-git`). Otherwise:
+
 ```sh
 make build && sudo install bin/tailbridge /usr/local/bin/
 sudo install -m644 contrib/systemd/tailbridge.service /etc/systemd/system/
@@ -59,4 +61,4 @@ The integration suite builds two sites that share the same `192.168.1.0/24` LAN,
 - [#11673: Subnet routing alternative – 1:1 NAT](https://github.com/tailscale/tailscale/issues/11673)
 - [#20609: Host-local routes](https://github.com/tailscale/tailscale/issues/20609) (related, not in scope)
 
-> This is an independent project, not an official Tailscale project.
+> This is an independent project, not an official Tailscale project. Licensed under the [MIT License](LICENSE).
