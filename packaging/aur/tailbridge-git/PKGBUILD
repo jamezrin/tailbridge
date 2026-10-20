@@ -27,7 +27,8 @@ prepare() {
 	cd "${pkgname%-git}"
 	export GOPATH="${srcdir}/gopath"
 	export GOTOOLCHAIN=local
-	go mod download -x >/dev/null
+	export GOFLAGS='-modcacherw'
+	go mod download
 }
 
 build() {
@@ -48,6 +49,7 @@ check() {
 	cd "${pkgname%-git}"
 	export GOPATH="${srcdir}/gopath"
 	export GOTOOLCHAIN=local
+	export GOFLAGS='-mod=readonly -modcacherw'
 	go test ./internal/...
 }
 
