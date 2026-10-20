@@ -1,0 +1,24 @@
+[Unit]
+Description=Tailbridge device mappings for Tailscale
+Documentation=https://github.com/jamezrin/tailbridge
+After=tailscaled.service network-online.target
+Wants=tailscaled.service network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/tailbridge daemon
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=5
+StateDirectory=tailbridge
+StateDirectoryMode=0700
+# Stopping the service leaves aliases, rules and routes in place so that a
+# restart does not interrupt connections. Use `tailbridge down` to remove them.
+KillMode=process
+ProtectSystem=full
+ProtectHome=true
+PrivateTmp=true
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
