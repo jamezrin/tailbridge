@@ -6,11 +6,6 @@
 - runs the unit tests in `check()`
 - builds with Arch's stock `go` and `GOTOOLCHAIN=local`, so nothing is downloaded at build time besides Go modules
 
-## Before publishing
-
-1. The GitHub repository must be public, or AUR users cannot clone the source.
-2. Add a LICENSE file and set `license=()` to its SPDX identifier. namcap rejects `unknown`.
-
 ## Test locally
 
 ```sh
