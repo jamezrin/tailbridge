@@ -30,19 +30,26 @@ func New(socket string) Client {
 // Peer is a resolved tailnet peer.
 type Peer struct {
 	Name   string // MagicDNS name without trailing dot, or hostname
+	ID     string // stable node ID
 	IP     netip.Addr
 	Online bool
 }
 
-// ResolvePeer finds the peer identified by spec: a Tailscale IPv4 address,
-// a full MagicDNS name, its first label, or the peer's hostname
-// (case-insensitive).
+// ResolvePeer finds the peer identified by spec: a Tailscale IPv4 address
+// or a full MagicDNS name, or (for nodes in this gateway's own tailnet
+// only) the first MagicDNS label or the hostname. Matching is
+// case-insensitive. Nodes shared in from other tailnets must be named by
+// full MagicDNS name or IP, since their hostnames are chosen by others.
 func ResolvePeer(st *ipnstate.Status, spec string) (Peer, error) {
 	spec = strings.TrimSuffix(strings.TrimSpace(spec), ".")
 	if spec == "" {
 		return Peer{}, fmt.Errorf("empty peer")
 	}
 	ip, ipErr := netip.ParseAddr(spec)
+	var selfSuffix string
+	if st.Self != nil {
+		selfSuffix = dnsSuffix(st.Self.DNSName)
+	}
 	var matches []*ipnstate.PeerStatus
 	for _, p := range st.Peer {
 		if ipErr == nil {
@@ -51,12 +58,12 @@ func ResolvePeer(st *ipnstate.Status, spec string) (Peer, error) {
 			}
 			continue
 		}
-		if nameMatches(p, spec) {
+		if nameMatches(p, spec, selfSuffix) {
 			matches = append(matches, p)
 		}
 	}
 	if len(matches) == 0 && st.Self != nil {
-		if (ipErr == nil && slices.Contains(st.Self.TailscaleIPs, ip)) || (ipErr != nil && nameMatches(st.Self, spec)) {
+		if (ipErr == nil && slices.Contains(st.Self.TailscaleIPs, ip)) || (ipErr != nil && nameMatches(st.Self, spec, selfSuffix)) {
 			return Peer{}, fmt.Errorf("peer %q is this gateway itself", spec)
 		}
 	}
@@ -77,13 +84,25 @@ func ResolvePeer(st *ipnstate.Status, spec string) (Peer, error) {
 	if !v4.IsValid() {
 		return Peer{}, fmt.Errorf("peer %q has no Tailscale IPv4 address", spec)
 	}
-	return Peer{Name: displayName(p), IP: v4, Online: p.Online}, nil
+	return Peer{Name: displayName(p), ID: string(p.ID), IP: v4, Online: p.Online}, nil
 }
 
-func nameMatches(p *ipnstate.PeerStatus, spec string) bool {
+func nameMatches(p *ipnstate.PeerStatus, spec, selfSuffix string) bool {
 	dns := strings.TrimSuffix(p.DNSName, ".")
+	if dns != "" && strings.EqualFold(dns, spec) {
+		return true
+	}
+	if selfSuffix == "" || !strings.EqualFold(dnsSuffix(p.DNSName), selfSuffix) {
+		return false
+	}
 	first, _, _ := strings.Cut(dns, ".")
-	return strings.EqualFold(dns, spec) || (first != "" && strings.EqualFold(first, spec)) || strings.EqualFold(p.HostName, spec)
+	return (first != "" && strings.EqualFold(first, spec)) || strings.EqualFold(p.HostName, spec)
+}
+
+// dnsSuffix returns the tailnet domain of a MagicDNS name.
+func dnsSuffix(dnsName string) string {
+	_, rest, _ := strings.Cut(strings.TrimSuffix(dnsName, "."), ".")
+	return rest
 }
 
 func displayName(p *ipnstate.PeerStatus) string {

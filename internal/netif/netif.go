@@ -28,8 +28,9 @@ type Net interface {
 	// CoveringRoutes lists non-default routes (in any table but local)
 	// whose destination contains addr.
 	CoveringRoutes(addr netip.Addr) ([]string, error)
-	// Neighbor returns the link-layer address of a valid neighbour entry
-	// for addr on iface, or "".
+	// Neighbor returns the link-layer address of a confirmed (reachable or
+	// permanent) neighbour entry for addr on iface, or "". Stale entries
+	// are ignored: the host may have left long ago.
 	Neighbor(iface string, addr netip.Addr) (string, error)
 }
 
@@ -163,7 +164,7 @@ func (Netlink) Neighbor(iface string, addr netip.Addr) (string, error) {
 		if !ok || ip.Unmap() != addr || len(n.HardwareAddr) == 0 {
 			continue
 		}
-		if n.State&(netlink.NUD_REACHABLE|netlink.NUD_STALE|netlink.NUD_DELAY|netlink.NUD_PROBE|netlink.NUD_PERMANENT) != 0 {
+		if n.State&(netlink.NUD_REACHABLE|netlink.NUD_PERMANENT) != 0 {
 			return n.HardwareAddr.String(), nil
 		}
 	}

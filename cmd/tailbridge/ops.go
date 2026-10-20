@@ -237,6 +237,9 @@ func runDaemon(ctx context.Context, interval time.Duration) error {
 	eng := newEngine()
 	last := map[string]string{}
 	pass := func(reason string) {
+		if ctx.Err() != nil {
+			return
+		}
 		err := withLock(func(cfg *config.Config) error {
 			res, err := eng.Reconcile(ctx, cfg, engine.Options{})
 			if res == nil {
@@ -269,7 +272,7 @@ func runDaemon(ctx context.Context, interval time.Duration) error {
 			last = seen
 			return err
 		})
-		if err != nil {
+		if err != nil && ctx.Err() == nil {
 			log.Error("reconcile failed", "trigger", reason, "err", err)
 		}
 	}

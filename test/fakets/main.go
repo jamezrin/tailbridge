@@ -20,11 +20,14 @@ import (
 
 	"tailscale.com/ipn"
 	"tailscale.com/ipn/ipnstate"
+	"tailscale.com/tailcfg"
 	"tailscale.com/types/key"
 	"tailscale.com/types/views"
 )
 
 type node struct {
+	// ID is the stable node ID; defaults to "id-" + hostName.
+	ID       string       `json:"id,omitempty"`
 	HostName string       `json:"hostName"`
 	DNSName  string       `json:"dnsName"`
 	IPs      []netip.Addr `json:"ips"`
@@ -84,7 +87,12 @@ func (s *server) key(name string) key.NodePublic {
 }
 
 func peerStatus(n node, routes []netip.Prefix) *ipnstate.PeerStatus {
+	id := n.ID
+	if id == "" {
+		id = "id-" + n.HostName
+	}
 	ps := &ipnstate.PeerStatus{
+		ID:           tailcfg.StableNodeID(id),
 		HostName:     n.HostName,
 		DNSName:      n.DNSName,
 		TailscaleIPs: n.IPs,

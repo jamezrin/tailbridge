@@ -31,9 +31,20 @@ type State struct {
 	// Routes Tailbridge added to tailscaled's AdvertiseRoutes. Routes that
 	// were already advertised by someone else are never recorded here.
 	Routes []netip.Prefix `json:"routes"`
-	// Peers caches the last resolved Tailscale IPv4 per lan mapping so that
-	// mappings survive temporary tailscaled unavailability.
-	Peers map[string]netip.Addr `json:"peers"`
+	// Peers pins the node each lan mapping resolved to and caches its last
+	// Tailscale IPv4, keyed by mapping name.
+	Peers map[string]CachedPeer `json:"peers"`
+}
+
+// CachedPeer is the node a lan mapping's peer spec resolved to.
+type CachedPeer struct {
+	// Spec is the peer spec the entry was resolved from; the entry is
+	// ignored if the mapping's spec changes.
+	Spec string     `json:"spec"`
+	IP   netip.Addr `json:"ip"`
+	// NodeID is the peer's stable node ID. A mapping never silently
+	// retargets to a different node with the same name.
+	NodeID string `json:"nodeID,omitempty"`
 }
 
 // HasAddr reports whether Tailbridge owns addr on iface.
@@ -60,7 +71,7 @@ func (d Dir) statePath() string { return filepath.Join(string(d), "state.json") 
 
 // Load reads the state, returning an empty state if none exists.
 func (d Dir) Load() (*State, error) {
-	s := &State{Version: 1, Peers: map[string]netip.Addr{}}
+	s := &State{Version: 1, Peers: map[string]CachedPeer{}}
 	b, err := os.ReadFile(d.statePath())
 	if errors.Is(err, os.ErrNotExist) {
 		return s, nil
@@ -72,7 +83,7 @@ func (d Dir) Load() (*State, error) {
 		return nil, fmt.Errorf("parse %s: %w", d.statePath(), err)
 	}
 	if s.Peers == nil {
-		s.Peers = map[string]netip.Addr{}
+		s.Peers = map[string]CachedPeer{}
 	}
 	return s, nil
 }

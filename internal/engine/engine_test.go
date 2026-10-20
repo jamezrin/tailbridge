@@ -86,6 +86,7 @@ type fakeNFT struct {
 	hash      string
 	present   bool
 	failApply bool
+	text      string
 	log       *[]string
 }
 
@@ -95,6 +96,7 @@ func (f *fakeNFT) Replace(text string) error {
 		return errors.New("boom")
 	}
 	*f.log = append(*f.log, "nft replace")
+	f.text = text
 	_, after, _ := strings.Cut(text, "sha256:")
 	f.hash, f.present = after[:16], true
 	return nil
@@ -107,11 +109,12 @@ func (f *fakeNFT) Delete() error {
 func (f *fakeNFT) Chains() ([]nft.Chain, error) { return nil, nil }
 
 type fakeTS struct {
-	st     *ipnstate.Status
-	routes []netip.Prefix
-	down   bool
-	writes int
-	log    *[]string
+	st       *ipnstate.Status
+	routes   []netip.Prefix
+	down     bool
+	failEdit bool
+	writes   int
+	log      *[]string
 }
 
 func (f *fakeTS) Status(context.Context) (*ipnstate.Status, error) {
@@ -127,6 +130,9 @@ func (f *fakeTS) GetPrefs(context.Context) (*ipn.Prefs, error) {
 	return &ipn.Prefs{AdvertiseRoutes: slices.Clone(f.routes)}, nil
 }
 func (f *fakeTS) EditPrefs(_ context.Context, mp *ipn.MaskedPrefs) (*ipn.Prefs, error) {
+	if f.failEdit {
+		return nil, errors.New("edit refused")
+	}
 	f.writes++
 	*f.log = append(*f.log, fmt.Sprint("routes ", mp.AdvertiseRoutes))
 	f.routes = slices.Clone(mp.AdvertiseRoutes)
@@ -149,7 +155,7 @@ type harness struct {
 
 func newHarness(t *testing.T) *harness {
 	h := &harness{}
-	peer := &ipnstate.PeerStatus{HostName: "device-b", DNSName: "device-b.ts.net.", Online: true,
+	peer := &ipnstate.PeerStatus{ID: "n1", HostName: "device-b", DNSName: "device-b.ts.net.", Online: true,
 		TailscaleIPs: []netip.Addr{netip.MustParseAddr("100.101.102.103")}}
 	h.net = &fakeNet{log: &h.log, addrs: map[string][]netip.Prefix{
 		"eth0":       {netip.MustParsePrefix("192.168.1.1/24")},
@@ -158,7 +164,7 @@ func newHarness(t *testing.T) *harness {
 	h.nft = &fakeNFT{log: &h.log}
 	h.ts = &fakeTS{log: &h.log, routes: pfx("0.0.0.0/0", "::/0"), st: &ipnstate.Status{
 		BackendState: "Running",
-		Self:         &ipnstate.PeerStatus{HostName: "gw", TailscaleIPs: []netip.Addr{netip.MustParseAddr("100.64.0.1")}},
+		Self:         &ipnstate.PeerStatus{HostName: "gw", DNSName: "gw.ts.net.", TailscaleIPs: []netip.Addr{netip.MustParseAddr("100.64.0.1")}},
 		Peer:         map[key.NodePublic]*ipnstate.PeerStatus{key.NewNode().Public(): peer},
 	}}
 	h.fwd = &fakeFwd{}
@@ -317,5 +323,100 @@ func TestDownRemovesOnlyOwned(t *testing.T) {
 	}
 	if h.nft.present || len(h.net.addrs["eth0"]) != 1 {
 		t.Errorf("leftovers: nft=%v addrs=%v", h.nft.present, h.net.addrs["eth0"])
+	}
+}
+
+func onlyPeer(h *harness) *ipnstate.PeerStatus {
+	for _, p := range h.ts.st.Peer {
+		return p
+	}
+	return nil
+}
+
+func TestPeerIdentityIsPinned(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	cfg := cfgWith(lanMapping())
+	if _, err := h.eng.Reconcile(ctx, cfg, Options{}); err != nil {
+		t.Fatal(err)
+	}
+	// Same node, new address: followed.
+	onlyPeer(h).TailscaleIPs = []netip.Addr{netip.MustParseAddr("100.101.102.104")}
+	res, err := h.eng.Reconcile(ctx, cfg, Options{})
+	if err != nil || res.Mapping("b").PeerIP != netip.MustParseAddr("100.101.102.104") {
+		t.Fatalf("address change not followed: %+v %v", res.Mapping("b"), err)
+	}
+	// A different node now answers to the same name: fail closed.
+	onlyPeer(h).ID = "n2"
+	h.log = nil
+	res, err = h.eng.Reconcile(ctx, cfg, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ms := res.Mapping("b"); ms.State != StateError || !strings.Contains(strings.Join(ms.Errors, ";"), "different node") {
+		t.Fatalf("identity change not rejected: %+v", ms)
+	}
+	if !slices.Contains(h.log, "deladdr 192.168.1.100") {
+		t.Errorf("alias kept after identity change: %q", h.log)
+	}
+}
+
+func TestUnresolvablePeerDoesNotUseCache(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	cfg := cfgWith(lanMapping())
+	if _, err := h.eng.Reconcile(ctx, cfg, Options{}); err != nil {
+		t.Fatal(err)
+	}
+	onlyPeer(h).DNSName, onlyPeer(h).HostName = "renamed.ts.net.", "renamed"
+	res, err := h.eng.Reconcile(ctx, cfg, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ms := res.Mapping("b"); ms.State != StateError {
+		t.Fatalf("stale cached address used: %+v", ms)
+	}
+}
+
+func TestFailedWithdrawalKeepsDropRule(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	if _, err := h.eng.Reconcile(ctx, cfgWith(tailnetMapping()), Options{}); err != nil {
+		t.Fatal(err)
+	}
+	h.ts.failEdit = true
+	if _, err := h.eng.Reconcile(ctx, cfgWith(), Options{}); err == nil {
+		t.Fatal("expected withdrawal error")
+	}
+	if !h.nft.present || !strings.Contains(h.nft.text, "ip daddr 10.250.0.10 counter drop") {
+		t.Fatalf("drop rule for still-advertised route removed:\n%s", h.nft.text)
+	}
+	if _, err := h.eng.Down(ctx, false); err == nil {
+		t.Fatal("down should report the route it could not withdraw")
+	}
+	if !h.nft.present || !strings.Contains(h.nft.text, "orphan-route") {
+		t.Fatalf("down deleted the table while the route is still advertised:\n%s", h.nft.text)
+	}
+	h.ts.failEdit = false
+	if _, err := h.eng.Down(ctx, false); err != nil {
+		t.Fatal(err)
+	}
+	if h.nft.present || slices.Contains(h.ts.routes, pfx("10.250.0.10/32")[0]) {
+		t.Fatalf("leftovers after successful down: nft=%v routes=%v", h.nft.present, h.ts.routes)
+	}
+}
+
+func TestTailscaledDownKeepsDropForStaleRoute(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	if _, err := h.eng.Reconcile(ctx, cfgWith(tailnetMapping()), Options{}); err != nil {
+		t.Fatal(err)
+	}
+	h.ts.down = true
+	if _, err := h.eng.Reconcile(ctx, cfgWith(), Options{}); err != nil {
+		t.Fatal(err)
+	}
+	if !h.nft.present || !strings.Contains(h.nft.text, "ip daddr 10.250.0.10 counter drop") {
+		t.Fatalf("stale route left unprotected:\n%s", h.nft.text)
 	}
 }

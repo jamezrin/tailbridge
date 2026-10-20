@@ -23,7 +23,14 @@ All commands accept `--config` (default `/etc/tailbridge/config.json`), `--state
 
 Exposes the tailnet peer `PEER` on the LAN at `ALIAS`.
 
-`PEER` can be a hostname, a MagicDNS name (short or full) or a Tailscale IPv4 address. It is re-resolved on every reconcile, so a peer that is re-registered with a new IP is followed automatically.
+`PEER` can be a Tailscale IPv4 address or a full MagicDNS name. Nodes in this gateway's own tailnet can also be named by their short MagicDNS name or hostname. Nodes shared in from other tailnets must use their full name or IP, because their hostnames are chosen by someone else.
+
+The first resolution **pins the node** (its stable node ID):
+
+- If the pinned node's IP changes, the mapping follows it.
+- If the name later resolves to a *different* node, or to nothing, the mapping fails closed and its alias is released. Remove and re-add the mapping to trust a new node.
+- A mapping that names its peer by IP fails closed if that IP moves to another peer or disappears.
+- The last known address is used only while tailscaled itself is unreachable.
 
 | Flag | Default | |
 | --- | --- | --- |

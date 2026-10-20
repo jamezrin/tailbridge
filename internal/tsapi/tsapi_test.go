@@ -87,6 +87,7 @@ func status() *ipnstate.Status {
 			key.NewNode().Public(): peer("web", "web.ts.net.", "100.101.0.1"),
 			key.NewNode().Public(): peer("web", "web-1.ts.net.", "100.101.0.2"),
 			key.NewNode().Public(): r2,
+			key.NewNode().Public(): peer("printer", "printer.other-tailnet.ts.net.", "100.70.0.1"),
 		},
 	}
 }
@@ -102,7 +103,11 @@ func TestResolvePeer(t *testing.T) {
 	if p, err := ResolvePeer(st, "web-1"); err != nil || p.IP != netip.MustParseAddr("100.101.0.2") {
 		t.Errorf("ResolvePeer(web-1) = %+v, %v", p, err)
 	}
+	if p, err := ResolvePeer(st, "printer.other-tailnet.ts.net"); err != nil || p.IP != netip.MustParseAddr("100.70.0.1") {
+		t.Errorf("shared node by full name = %+v, %v", p, err)
+	}
 	for spec, wantErr := range map[string]string{
+		"printer":    "no tailnet peer", // shared-in nodes need their full name
 		"web":        "ambiguous",
 		"nope":       "no tailnet peer",
 		"gw":         "itself",

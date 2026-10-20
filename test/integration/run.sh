@@ -194,6 +194,7 @@ iptables-nft -N ts-forward
 iptables-nft -A FORWARD -j ts-forward
 iptables-nft -A ts-forward -i tailscale0 -j MARK --set-xmark 0x40000/0xff0000
 iptables-nft -A ts-forward -m mark --mark 0x40000/0xff0000 -j ACCEPT
+iptables-nft -A ts-forward -s 100.64.0.0/10 -o tailscale0 -j DROP
 iptables-nft -A ts-forward -o tailscale0 -j ACCEPT
 iptables-nft -t nat -N ts-postrouting
 iptables-nft -t nat -A POSTROUTING -j ts-postrouting
@@ -335,6 +336,17 @@ fake gw1 '.advertiseRoutes = ["0.0.0.0/0","::/0","192.0.2.7/32"]'
 has_route() { routes gw1 | grep -q 10.250.0.10/32; }
 eventually "withdrawn route is re-advertised" 10 has_route
 
+# A different node starts answering to the same name: fail closed.
+fake gw1 '(.peers[] | select(.hostName=="device-b") | .id) = "id-imposter"'
+no_alias() { ! has_alias; }
+eventually "mapping fails closed when the name resolves to a different node" 10 no_alias
+expect_contains "status explains the identity change" "$(tb1 status)" "resolves to a different node"
+fake gw1 '(.peers[] | select(.hostName=="device-b") | .id) = "id-device-b"'
+eventually "mapping recovers when the pinned node is back" 10 check_peer2
+
+expect_eq "IP-pinned mapping fails closed once the peer's IP changes" "$(tb1 status --json | jq -r '.mappings[] | select(.name=="b-restricted") | .state')" "error"
+expect_eq "its alias was released" "$(ip -n gw1 -br addr show eth0 | grep -c 192.168.1.102 || true)" "0"
+
 kill "$DAEMON"; wait "$DAEMON" 2>/dev/null || true
 expect_eq "stopping the daemon leaves state in place" "$(tcp lan1 192.168.1.100 8080)" "peer-b2 seen-from 100.64.0.1"
 
@@ -351,7 +363,6 @@ expect_eq "daemon restart does not rewrite prefs" "$(jq .writes "$W/gw1/fakets.j
 # Simulate a reboot: kernel state is gone, config and state files remain.
 ip -n gw1 addr del 192.168.1.100/32 dev eth0
 ip -n gw1 addr del 192.168.1.101/32 dev eth0
-ip -n gw1 addr del 192.168.1.102/32 dev eth0
 ip netns exec gw1 nft delete table ip tailbridge
 expect_success "apply after reboot" tb1 apply
 expect_eq "A works after reboot" "$(tcp lan1 192.168.1.100 8080)" "peer-b2 seen-from 100.64.0.1"

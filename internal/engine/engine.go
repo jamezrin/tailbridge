@@ -169,6 +169,11 @@ func (e *Engine) Reconcile(ctx context.Context, cfg *config.Config, opts Options
 	}
 	res := &Result{}
 	obs := e.observeTailscale(ctx, res)
+	if err := ctx.Err(); err != nil {
+		// A cancelled context is not an unavailable tailscaled; don't
+		// reconcile in degraded mode while shutting down.
+		return nil, err
+	}
 	tsIf := cfg.TSInterface()
 	if !e.Net.LinkExists(tsIf) {
 		res.Warnings = append(res.Warnings, fmt.Sprintf("tailscale interface %s does not exist", tsIf))
@@ -195,6 +200,12 @@ func (e *Engine) Reconcile(ctx context.Context, cfg *config.Config, opts Options
 		}
 	}
 
+	for name := range st.Peers {
+		if m, ok := cfg.Find(name); !ok || m.Kind != config.KindLAN {
+			delete(st.Peers, name)
+		}
+	}
+
 	if err := e.plan(res, st, obs, &rules, wantAddrs, wantRoutes); err != nil {
 		return res, err
 	}
@@ -208,7 +219,7 @@ func (e *Engine) Reconcile(ctx context.Context, cfg *config.Config, opts Options
 		e.fillRouteStatus(res, obs)
 		return res, err
 	}
-	err = e.apply(ctx, res, st, wantRoutes)
+	err = e.apply(ctx, res, st, &rules, wantAddrs, wantRoutes)
 	res.Applied = true
 	// Refresh approval information after changing routes.
 	if obs.prefs != nil && (len(res.Plan.AdvertiseRoutes) > 0 || len(res.Plan.WithdrawRoutes) > 0) {
@@ -234,11 +245,28 @@ func (e *Engine) evalLAN(m *config.Mapping, ms *MappingStatus, st *state.State, 
 		return nft.LANRule{}, false
 	}
 
-	// Resolve the peer, falling back to the last known address.
+	// Resolve the peer. The first resolution pins the node; afterwards the
+	// mapping follows that node's address changes but never silently moves
+	// to a different node that happens to match the same name. The cached
+	// address is only used while tailscaled is unreachable.
 	var peerIP netip.Addr
-	if obs.status != nil {
+	cached, hasCache := st.Peers[m.Name]
+	if hasCache && cached.Spec != m.Peer {
+		hasCache = false
+		delete(st.Peers, m.Name)
+	}
+	switch {
+	case obs.status != nil:
 		p, err := tsapi.ResolvePeer(obs.status, m.Peer)
-		if err == nil {
+		switch {
+		case err != nil:
+			// Forget the cached address so a later tailscaled outage
+			// cannot revive a mapping whose peer is gone.
+			delete(st.Peers, m.Name)
+			ms.fail("%v", err)
+		case hasCache && cached.NodeID != "" && p.ID != cached.NodeID:
+			ms.fail("peer %q now resolves to a different node (%s, id %s; pinned id %s); remove and re-add the mapping to trust it", m.Peer, p.Name, p.ID, cached.NodeID)
+		default:
 			peerIP = p.IP
 			ms.PeerName = p.Name
 			online := p.Online
@@ -246,17 +274,12 @@ func (e *Engine) evalLAN(m *config.Mapping, ms *MappingStatus, st *state.State, 
 			if !online {
 				ms.warn("peer %s is offline", p.Name)
 			}
-			st.Peers[m.Name] = p.IP
-		} else if cached, ok := st.Peers[m.Name]; ok {
-			peerIP = cached
-			ms.warn("%v; using last known address %s", err, cached)
-		} else {
-			ms.fail("%v", err)
+			st.Peers[m.Name] = state.CachedPeer{Spec: m.Peer, IP: p.IP, NodeID: p.ID}
 		}
-	} else if cached, ok := st.Peers[m.Name]; ok {
-		peerIP = cached
-		ms.warn("tailscaled unavailable; using last known peer address %s", cached)
-	} else {
+	case hasCache:
+		peerIP = cached.IP
+		ms.warn("tailscaled unavailable; using last known peer address %s", cached.IP)
+	default:
 		ms.fail("tailscaled unavailable and peer %q was never resolved", m.Peer)
 	}
 	ms.PeerIP = peerIP
@@ -353,18 +376,42 @@ func (e *Engine) fillRouteStatus(res *Result, obs observation) {
 	}
 }
 
+// staleRoutes returns owned routes that are no longer wanted.
+func staleRoutes(st *state.State, want []netip.Prefix) []netip.Prefix {
+	var out []netip.Prefix
+	for _, r := range st.Routes {
+		if !slices.Contains(want, r) {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// withOrphans returns rules plus drop rules for every owned alias and
+// owned route that is still present but no longer wanted, so that a failed
+// removal never leaves an alias or advertised route without protection.
+func withOrphans(rules *nft.Rules, st *state.State, wantAddrs []state.OwnedAddr, wantRoutes []netip.Prefix) *nft.Rules {
+	out := *rules
+	out.OrphanAliases, out.OrphanVIPs = nil, nil
+	for _, a := range st.Addresses {
+		if !slices.Contains(wantAddrs, a) {
+			out.OrphanAliases = append(out.OrphanAliases, a.Addr)
+		}
+	}
+	for _, r := range staleRoutes(st, wantRoutes) {
+		out.OrphanVIPs = append(out.OrphanVIPs, r.Addr())
+	}
+	return &out
+}
+
 func (e *Engine) plan(res *Result, st *state.State, obs observation, rules *nft.Rules, wantAddrs []state.OwnedAddr, wantRoutes []netip.Prefix) error {
 	p := &res.Plan
-	text, hash := nft.Render(rules)
-	curHash, present, err := e.NFT.CurrentHash()
-	if err != nil {
-		return fmt.Errorf("inspect nftables: %w", err)
-	}
-	if rules.Empty() {
-		p.DeleteNFT = present
-	} else {
-		p.Ruleset = text
-		p.ReplaceNFT = !present || curHash != hash
+
+	// Forget ownership of routes someone else already removed.
+	if obs.prefs != nil {
+		st.Routes = slices.DeleteFunc(st.Routes, func(r netip.Prefix) bool {
+			return !slices.Contains(wantRoutes, r) && !slices.Contains(obs.prefs.AdvertiseRoutes, r)
+		})
 	}
 
 	for _, a := range st.Addresses {
@@ -382,6 +429,9 @@ func (e *Engine) plan(res *Result, st *state.State, obs observation, rules *nft.
 		}
 	}
 
+	// Expected final firewall state: stale aliases are removed, and stale
+	// routes are withdrawn only if tailscaled is reachable.
+	final := *rules
 	if obs.prefs != nil {
 		cur := obs.prefs.AdvertiseRoutes
 		next, _ := tsapi.MergeRoutes(cur, st.Routes, wantRoutes)
@@ -395,6 +445,21 @@ func (e *Engine) plan(res *Result, st *state.State, obs observation, rules *nft.
 				p.AdvertiseRoutes = append(p.AdvertiseRoutes, r)
 			}
 		}
+	} else {
+		for _, r := range staleRoutes(st, wantRoutes) {
+			final.OrphanVIPs = append(final.OrphanVIPs, r.Addr())
+		}
+	}
+	text, hash := nft.Render(&final)
+	curHash, present, err := e.NFT.CurrentHash()
+	if err != nil {
+		return fmt.Errorf("inspect nftables: %w", err)
+	}
+	if final.Empty() {
+		p.DeleteNFT = present
+	} else {
+		p.Ruleset = text
+		p.ReplaceNFT = !present || curHash != hash
 	}
 
 	if !rules.Empty() {
@@ -413,13 +478,14 @@ func (e *Engine) plan(res *Result, st *state.State, obs observation, rules *nft.
 //  1. withdraw routes no longer wanted (tailscaled stops accepting traffic
 //     for them before their NAT rules disappear);
 //  2. remove stale aliases (before their drop rules disappear);
-//  3. atomically replace the firewall table;
+//  3. atomically replace the firewall table, keeping drop rules for any
+//     alias or route whose removal failed;
 //  4. add new aliases (only once their rules exist);
 //  5. advertise new routes (only once their rules exist).
 //
 // Ownership is recorded in the state file before each resource is created,
 // so a crash never leaves a Tailbridge-created resource that looks foreign.
-func (e *Engine) apply(ctx context.Context, res *Result, st *state.State, wantRoutes []netip.Prefix) error {
+func (e *Engine) apply(ctx context.Context, res *Result, st *state.State, rules *nft.Rules, wantAddrs []state.OwnedAddr, wantRoutes []netip.Prefix) error {
 	p := &res.Plan
 	var errs []error
 	save := func() {
@@ -435,7 +501,7 @@ func (e *Engine) apply(ctx context.Context, res *Result, st *state.State, wantRo
 	}
 
 	if len(p.WithdrawRoutes) > 0 {
-		if err := e.withdrawRoutes(ctx, st, p.WithdrawRoutes); err != nil {
+		if err := e.withdrawRoutes(ctx, st, staleRoutes(st, wantRoutes)); err != nil {
 			errs = append(errs, err)
 		}
 		save()
@@ -450,18 +516,10 @@ func (e *Engine) apply(ctx context.Context, res *Result, st *state.State, wantRo
 	}
 	save()
 
-	switch {
-	case p.ReplaceNFT:
-		if err := e.NFT.Replace(p.Ruleset); err != nil {
-			// Without rules, adding aliases or routes would expose the
-			// gateway itself, so stop here.
-			save()
-			return errors.Join(append(errs, fmt.Errorf("apply firewall rules: %w", err))...)
-		}
-	case p.DeleteNFT:
-		if err := e.NFT.Delete(); err != nil {
-			errs = append(errs, fmt.Errorf("delete firewall table: %w", err))
-		}
+	if err := e.syncFirewall(withOrphans(rules, st, wantAddrs, wantRoutes)); err != nil {
+		// Without rules, adding aliases or routes would expose the
+		// gateway itself, so stop here.
+		return errors.Join(append(errs, err)...)
 	}
 
 	for _, a := range p.AddAddrs {
@@ -486,6 +544,26 @@ func (e *Engine) apply(ctx context.Context, res *Result, st *state.State, wantRo
 	return errors.Join(errs...)
 }
 
+// syncFirewall makes the live Tailbridge table match rules.
+func (e *Engine) syncFirewall(rules *nft.Rules) error {
+	text, hash := nft.Render(rules)
+	cur, present, err := e.NFT.CurrentHash()
+	if err != nil {
+		return fmt.Errorf("inspect nftables: %w", err)
+	}
+	switch {
+	case rules.Empty() && present:
+		if err := e.NFT.Delete(); err != nil {
+			return fmt.Errorf("delete firewall table: %w", err)
+		}
+	case !rules.Empty() && (!present || cur != hash):
+		if err := e.NFT.Replace(text); err != nil {
+			return fmt.Errorf("apply firewall rules: %w", err)
+		}
+	}
+	return nil
+}
+
 func (r *Result) mappingByIP(ip netip.Addr) *MappingStatus {
 	for _, m := range r.Mappings {
 		if m.IP == ip {
@@ -495,7 +573,8 @@ func (r *Result) mappingByIP(ip netip.Addr) *MappingStatus {
 	return nil
 }
 
-// withdrawRoutes removes owned routes from a fresh copy of the prefs.
+// withdrawRoutes removes owned routes from a fresh copy of the prefs and
+// forgets their ownership once tailscaled confirms the change.
 func (e *Engine) withdrawRoutes(ctx context.Context, st *state.State, withdraw []netip.Prefix) error {
 	prefs, err := e.TS.GetPrefs(ctx)
 	if err != nil {
@@ -543,8 +622,10 @@ func (e *Engine) advertiseRoutes(ctx context.Context, st *state.State, want []ne
 }
 
 // Down removes every Tailbridge-owned resource: owned advertised routes,
-// owned aliases and the Tailbridge firewall table. Configuration is kept.
-// net.ipv4.ip_forward is deliberately left unchanged.
+// owned aliases and the Tailbridge firewall table. Configuration and peer
+// pins are kept. net.ipv4.ip_forward is deliberately left unchanged. If a
+// route or alias cannot be removed, the table is kept with drop rules for
+// it instead of being deleted.
 func (e *Engine) Down(ctx context.Context, dryRun bool) (*Plan, error) {
 	st, err := e.State.Load()
 	if err != nil {
@@ -587,10 +668,11 @@ func (e *Engine) Down(ctx context.Context, dryRun bool) (*Plan, error) {
 		}
 		st.DelAddr(a.Interface, a.Addr)
 	}
-	if p.DeleteNFT {
-		if err := e.NFT.Delete(); err != nil {
-			errs = append(errs, fmt.Errorf("delete firewall table: %w", err))
-		}
+	if err := e.syncFirewall(withOrphans(&nft.Rules{}, st, nil, nil)); err != nil {
+		errs = append(errs, err)
+	}
+	if len(st.Routes) > 0 || len(st.Addresses) > 0 {
+		errs = append(errs, fmt.Errorf("kept drop rules for resources that could not be removed: routes %s, %d alias(es); fix the error and run down again", prefixList(st.Routes), len(st.Addresses)))
 	}
 	if err := e.State.Save(st); err != nil {
 		errs = append(errs, err)

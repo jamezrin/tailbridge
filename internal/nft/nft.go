@@ -53,11 +53,19 @@ type Rules struct {
 	TSInterface string
 	LAN         []LANRule
 	Tailnet     []TailnetRule
+	// OrphanAliases are Tailbridge-owned aliases that could not be removed
+	// yet; traffic to them keeps being dropped.
+	OrphanAliases []netip.Addr
+	// OrphanVIPs are virtual IPs whose routes Tailbridge could not withdraw
+	// yet; traffic to them keeps being dropped instead of being routed.
+	OrphanVIPs []netip.Addr
 }
 
 // Empty reports whether no rules are needed, in which case the table should
 // not exist at all.
-func (r *Rules) Empty() bool { return len(r.LAN) == 0 && len(r.Tailnet) == 0 }
+func (r *Rules) Empty() bool {
+	return len(r.LAN) == 0 && len(r.Tailnet) == 0 && len(r.OrphanAliases) == 0 && len(r.OrphanVIPs) == 0
+}
 
 // Render returns the table definition and a hash of it. The hash is stored
 // as the table comment so reconciliation can detect drift cheaply.
@@ -99,6 +107,9 @@ func Render(r *Rules) (text, hash string) {
 	for _, m := range r.LAN {
 		w("\t\tip daddr %s counter drop comment %q\n", m.Alias, "lan:"+m.Name+":untranslated")
 	}
+	for _, a := range r.OrphanAliases {
+		w("\t\tip daddr %s counter drop comment %q\n", a, "orphan-alias")
+	}
 	w("\t}\n\n")
 
 	// Traffic to a virtual IP that was not translated must not be routed
@@ -106,6 +117,9 @@ func Render(r *Rules) (text, hash string) {
 	w("\tchain forward {\n\t\ttype filter hook forward priority -10; policy accept;\n")
 	for _, m := range r.Tailnet {
 		w("\t\tip daddr %s counter drop comment %q\n", m.VIP, "tailnet:"+m.Name+":untranslated")
+	}
+	for _, a := range r.OrphanVIPs {
+		w("\t\tip daddr %s counter drop comment %q\n", a, "orphan-route")
 	}
 	w("\t}\n")
 

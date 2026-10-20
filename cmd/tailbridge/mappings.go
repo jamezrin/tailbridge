@@ -148,6 +148,9 @@ device's replies return through the gateway.`,
 }
 
 func sanitizeName(s string) string {
+	if ip, err := netip.ParseAddr(s); err == nil {
+		return "peer-" + strings.ReplaceAll(ip.String(), ".", "-")
+	}
 	s, _, _ = strings.Cut(strings.TrimSuffix(s, "."), ".")
 	var b strings.Builder
 	for _, r := range s {
