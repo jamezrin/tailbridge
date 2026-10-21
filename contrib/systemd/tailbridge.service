@@ -6,7 +6,7 @@ Wants=tailscaled.service network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/tailbridge daemon
+ExecStart=/usr/bin/tailbridge daemon
 ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure
 RestartSec=5
