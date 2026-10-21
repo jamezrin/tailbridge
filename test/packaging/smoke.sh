@@ -74,4 +74,20 @@ run "extracted tarball, offline install.sh on debian" debian:stable "
 	! test -e /usr/local/bin/tailbridge
 "
 
+# Piped install must never trust files in the current directory. The
+# container has no network, so the download fails instead.
+printf '\n== piped install.sh ignores planted files in the cwd\n'
+if docker run --rm --network none -v "$ROOT/install.sh:/install.sh:ro" alpine:latest sh -c '
+	mkdir /planted && cd /planted
+	printf "#!/bin/sh\necho PWNED\n" > tailbridge && chmod +x tailbridge
+	echo "ExecStart=/x/tailbridge daemon" > tailbridge.service
+	TAILBRIDGE_VERSION=v0.0.0 sh < /install.sh
+	echo "exit=$?"
+	! test -e /usr/local/bin/tailbridge' 2>&1 | grep -q "exit=1"; then
+	echo "-- ok: planted files ignored"
+else
+	echo "-- FAIL: piped install used files from the current directory"
+	FAIL=1
+fi
+
 exit $FAIL

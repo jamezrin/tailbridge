@@ -71,11 +71,17 @@ esac
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 
-script_dir=$(cd "$(dirname "$0")" 2>/dev/null && pwd || echo .)
+# Offline mode only when this script is run as a file from an extracted
+# release archive. When piped (curl ... | sh), $0 is the shell, and files in
+# the current directory must never be trusted.
+script_dir=
+if [ -f "$0" ] && [ "$(basename "$0")" = install.sh ]; then
+	script_dir=$(cd "$(dirname "$0")" && pwd)
+fi
 if [ -n "${TAILBRIDGE_ARCHIVE:-}" ]; then
 	tar -xzf "$TAILBRIDGE_ARCHIVE" -C "$TMP"
 	SRC=$(find "$TMP" -maxdepth 2 -type f -name tailbridge -exec dirname {} \; | head -n1)
-elif [ -f "$script_dir/tailbridge" ] && [ -f "$script_dir/tailbridge.service" ]; then
+elif [ -n "$script_dir" ] && [ -f "$script_dir/tailbridge" ] && [ -f "$script_dir/tailbridge.service" ]; then
 	SRC=$script_dir
 else
 	VERSION=${TAILBRIDGE_VERSION:-$(latest_version)}
