@@ -160,8 +160,11 @@ If the VPN blocks LAN access entirely, Tailbridge cannot help.
 
 ## Uninstall
 
-```sh
-sudo systemctl disable --now tailbridge
-sudo tailbridge down
-sudo rm -rf /etc/tailbridge /var/lib/tailbridge /usr/local/bin/tailbridge /etc/systemd/system/tailbridge.service
-```
+Removing the package stops and disables the service, then runs `tailbridge down`, so no Tailbridge-owned aliases, rules or routes are left behind:
+
+- **Debian, Ubuntu:** `sudo apt remove tailbridge`
+- **Fedora, RHEL:** `sudo dnf remove tailbridge`
+- **Arch:** `sudo pacman -R tailbridge-git`. Run `sudo systemctl disable --now tailbridge && sudo tailbridge down` first.
+- **install.sh:** `sudo install.sh --uninstall`
+
+The configuration (`/etc/tailbridge`) and state (`/var/lib/tailbridge`) are kept. Delete them to remove everything.

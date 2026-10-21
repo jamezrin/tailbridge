@@ -1,0 +1,129 @@
+version: 2
+
+project_name: tailbridge
+
+before:
+  hooks:
+    - go mod download
+
+builds:
+  - id: tailbridge
+    main: ./cmd/tailbridge
+    binary: tailbridge
+    env:
+      # Static binaries run on any glibc or musl distribution.
+      - CGO_ENABLED=0
+    goos: [linux]
+    goarch: [amd64, arm64, arm]
+    goarm: ["7"]
+    flags: [-trimpath]
+    ldflags:
+      - -s -w -X main.version={{ .Version }}
+
+archives:
+  - id: tarball
+    formats: [tar.gz]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}{{ if .Arm }}v{{ .Arm }}{{ end }}"
+    wrap_in_directory: true
+    files:
+      - LICENSE
+      - README.md
+      - src: install.sh
+        info:
+          mode: 0755
+      - src: docs/USAGE.md
+        strip_parent: true
+      - src: contrib/systemd/tailbridge.service
+        strip_parent: true
+
+nfpms:
+  - id: packages
+    package_name: tailbridge
+    file_name_template: "{{ .ConventionalFileName }}"
+    vendor: Jaime Martínez Rincón
+    maintainer: Jaime Martínez Rincón <mrjaime1999@gmail.com>
+    homepage: https://github.com/jamezrin/tailbridge
+    description: |-
+      Expose individual devices across a LAN and a Tailscale tailnet.
+      Tailbridge runs next to an existing tailscaled and manages IPv4 aliases,
+      nftables NAT rules and per-device advertised /32 routes.
+    license: MIT
+    section: net
+    formats: [deb, rpm]
+    bindir: /usr/bin
+    dependencies:
+      - nftables
+    recommends:
+      - tailscale
+    contents:
+      - src: contrib/systemd/tailbridge.service
+        dst: /usr/lib/systemd/system/tailbridge.service
+        file_info:
+          mode: 0644
+      - src: README.md
+        dst: /usr/share/doc/tailbridge/README.md
+        file_info:
+          mode: 0644
+      - src: docs/USAGE.md
+        dst: /usr/share/doc/tailbridge/USAGE.md
+        file_info:
+          mode: 0644
+      - src: LICENSE
+        dst: /usr/share/doc/tailbridge/copyright
+        packager: deb
+        file_info:
+          mode: 0644
+      - src: LICENSE
+        dst: /usr/share/licenses/tailbridge/LICENSE
+        packager: rpm
+        file_info:
+          mode: 0644
+        type: license
+    scripts:
+      postinstall: packaging/scripts/postinstall.sh
+      preremove: packaging/scripts/preremove.sh
+    deb:
+      lintian_overrides:
+        - statically-linked-binary
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^chore\\(deps\\)"
+      - "^Merge pull request"
+
+release:
+  github:
+    owner: jamezrin
+    name: tailbridge
+  # The release workflow smoke-tests the uploaded assets before publishing.
+  draft: true
+  replace_existing_draft: true
+  footer: |
+    ## Install
+
+    **Debian / Ubuntu and derivatives**
+
+    ```sh
+    curl -fLO https://github.com/jamezrin/tailbridge/releases/download/{{ .Tag }}/tailbridge_{{ .Version }}_amd64.deb
+    sudo apt install ./tailbridge_{{ .Version }}_amd64.deb
+    ```
+
+    **Fedora / RHEL / openSUSE**: `sudo dnf install https://github.com/jamezrin/tailbridge/releases/download/{{ .Tag }}/tailbridge-{{ .Version }}-1.x86_64.rpm`
+
+    **Arch Linux**: `paru -S tailbridge-git` (AUR)
+
+    **Any distribution** (static binary + systemd unit, checksum-verified):
+
+    ```sh
+    curl -fsSL https://raw.githubusercontent.com/jamezrin/tailbridge/main/install.sh | sudo sh
+    ```
+
+    Or download a `tailbridge_{{ .Version }}_linux_<arch>.tar.gz`, extract it and run `sudo ./install.sh`.
+
+    Then: `sudo tailbridge diagnose && sudo systemctl enable --now tailbridge`. See [USAGE.md](https://github.com/jamezrin/tailbridge/blob/{{ .Tag }}/docs/USAGE.md).

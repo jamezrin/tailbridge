@@ -19,3 +19,20 @@ jobs:
         run: make test
       - name: integration tests (privileged container, isolated netns)
         run: make integration
+
+  packages:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: build release artifacts (snapshot)
+        uses: goreleaser/goreleaser-action@v7
+        with:
+          version: "~> v2"
+          args: release --snapshot --clean
+      - name: install .deb/.rpm/tarball on Debian, Ubuntu, Fedora and Alpine
+        run: test/packaging/smoke.sh dist
